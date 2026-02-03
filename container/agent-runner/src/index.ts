@@ -234,10 +234,13 @@ async function main(): Promise<void> {
   try {
     log('Starting agent...');
 
+    // Use WORKSPACE_GROUP env var in sandbox mode, fallback to container path
+    const workingDir = process.env.WORKSPACE_GROUP || '/workspace/group';
+
     for await (const message of query({
       prompt,
       options: {
-        cwd: '/workspace/group',
+        cwd: workingDir,
         resume: input.sessionId,
         allowedTools: [
           'Bash',

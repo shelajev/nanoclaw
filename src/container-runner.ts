@@ -209,14 +209,20 @@ async function runSandboxAgent(
   // Path to agent-runner in sandbox
   const agentRunnerPath = path.join(projectRoot, 'container', 'agent-runner', 'dist', 'index.js');
 
+  // Ensure PATH includes standard locations for node and claude-code
+  const homeDir = process.env.HOME || '/home/agent';
+  const defaultPath = `/usr/local/bin:/usr/bin:/bin:${homeDir}/.local/bin:${homeDir}/.npm-global/bin:/usr/local/nodejs/bin`;
+  const envPath = process.env.PATH ? `${process.env.PATH}:${defaultPath}` : defaultPath;
+
   return new Promise((resolve) => {
     const agent = spawn('node', [agentRunnerPath], {
       stdio: ['pipe', 'pipe', 'pipe'],
       cwd: groupDir,
       env: {
         ...process.env,
+        PATH: envPath,
         // Map paths that agent-runner expects
-        HOME: process.env.HOME || '/home/agent',
+        HOME: homeDir,
         WORKSPACE_GROUP: groupDir,
         WORKSPACE_GLOBAL: path.join(GROUPS_DIR, 'global'),
         WORKSPACE_IPC: groupIpcDir,
