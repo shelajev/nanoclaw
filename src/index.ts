@@ -478,9 +478,12 @@ async function connectWhatsApp(): Promise<void> {
 
   const { state, saveCreds } = await useMultiFileAuthState(authDir);
 
+  // In sandbox mode, print QR to terminal; otherwise use notification flow
+  const isSandbox = process.env.IS_SANDBOX === '1';
+
   sock = makeWASocket({
     auth: { creds: state.creds, keys: makeCacheableSignalKeyStore(state.keys, logger) },
-    printQRInTerminal: false,
+    printQRInTerminal: isSandbox,
     logger,
     browser: ['NanoClaw', 'Chrome', '1.0.0']
   });
@@ -488,11 +491,15 @@ async function connectWhatsApp(): Promise<void> {
   sock.ev.on('connection.update', (update) => {
     const { connection, lastDisconnect, qr } = update;
 
-    if (qr) {
+    if (qr && !isSandbox) {
+      // Non-sandbox mode: show notification and exit
       const msg = 'WhatsApp authentication required. Run /setup in Claude Code.';
       logger.error(msg);
       exec(`osascript -e 'display notification "${msg}" with title "NanoClaw" sound name "Basso"'`);
       setTimeout(() => process.exit(1), 1000);
+    } else if (qr && isSandbox) {
+      // Sandbox mode: QR is printed by printQRInTerminal, just log
+      logger.info('Scan the QR code above with WhatsApp to authenticate');
     }
 
     if (connection === 'close') {
