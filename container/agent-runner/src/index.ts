@@ -3,6 +3,11 @@
  * Runs inside a container, receives config via stdin, outputs result to stdout
  */
 
+// Bootstrap global-agent FIRST to enable HTTP proxy support for Node.js
+// This must be done before any HTTP requests are made
+import { bootstrap } from 'global-agent';
+bootstrap();
+
 import fs from 'fs';
 import path from 'path';
 import { query, HookCallback, PreCompactHookInput } from '@anthropic-ai/claude-agent-sdk';
