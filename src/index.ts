@@ -575,6 +575,12 @@ async function startMessageLoop(): Promise<void> {
 }
 
 function ensureContainerSystemRunning(): void {
+  // In sandbox mode, we're already inside a Docker container - no nested container needed
+  if (process.env.IS_SANDBOX === '1') {
+    logger.info('Running in sandbox mode - skipping Apple Container check');
+    return;
+  }
+
   try {
     execSync('container system status', { stdio: 'pipe' });
     logger.debug('Apple Container system already running');

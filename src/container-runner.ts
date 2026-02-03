@@ -1,6 +1,6 @@
 /**
  * Container Runner for NanoClaw
- * Spawns agent execution in Apple Container and handles IPC
+ * Spawns agent execution in Apple Container (or directly in sandbox mode) and handles IPC
  */
 
 import { spawn } from 'child_process';
@@ -17,6 +17,8 @@ import {
 } from './config.js';
 import { RegisteredGroup } from './types.js';
 import { validateAdditionalMounts } from './mount-security.js';
+
+const IS_SANDBOX = process.env.IS_SANDBOX === '1';
 
 const logger = pino({
   level: process.env.LOG_LEVEL || 'info',
@@ -173,10 +175,179 @@ function buildContainerArgs(mounts: VolumeMount[]): string[] {
   return args;
 }
 
+/**
+ * Run agent directly in sandbox mode (no nested container).
+ * The sandbox already provides isolation, so we run the agent-runner directly.
+ */
+async function runSandboxAgent(
+  group: RegisteredGroup,
+  input: ContainerInput
+): Promise<ContainerOutput> {
+  const startTime = Date.now();
+  const projectRoot = process.cwd();
+
+  const groupDir = path.join(GROUPS_DIR, group.folder);
+  fs.mkdirSync(groupDir, { recursive: true });
+
+  // Set up directories that would normally be mounted
+  const groupSessionsDir = path.join(DATA_DIR, 'sessions', group.folder, '.claude');
+  fs.mkdirSync(groupSessionsDir, { recursive: true });
+
+  const groupIpcDir = path.join(DATA_DIR, 'ipc', group.folder);
+  fs.mkdirSync(path.join(groupIpcDir, 'messages'), { recursive: true });
+  fs.mkdirSync(path.join(groupIpcDir, 'tasks'), { recursive: true });
+
+  logger.info({
+    group: group.name,
+    isMain: input.isMain,
+    mode: 'sandbox'
+  }, 'Running agent directly in sandbox mode');
+
+  const logsDir = path.join(GROUPS_DIR, group.folder, 'logs');
+  fs.mkdirSync(logsDir, { recursive: true });
+
+  // Path to agent-runner in sandbox
+  const agentRunnerPath = path.join(projectRoot, 'container', 'agent-runner', 'dist', 'index.js');
+
+  return new Promise((resolve) => {
+    const agent = spawn('node', [agentRunnerPath], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      cwd: groupDir,
+      env: {
+        ...process.env,
+        // Map paths that agent-runner expects
+        HOME: process.env.HOME || '/home/agent',
+        WORKSPACE_GROUP: groupDir,
+        WORKSPACE_GLOBAL: path.join(GROUPS_DIR, 'global'),
+        WORKSPACE_IPC: groupIpcDir,
+        CLAUDE_HOME: groupSessionsDir
+      }
+    });
+
+    let stdout = '';
+    let stderr = '';
+    let stdoutTruncated = false;
+    let stderrTruncated = false;
+
+    agent.stdin.write(JSON.stringify(input));
+    agent.stdin.end();
+
+    agent.stdout.on('data', (data) => {
+      if (stdoutTruncated) return;
+      const chunk = data.toString();
+      const remaining = CONTAINER_MAX_OUTPUT_SIZE - stdout.length;
+      if (chunk.length > remaining) {
+        stdout += chunk.slice(0, remaining);
+        stdoutTruncated = true;
+        logger.warn({ group: group.name, size: stdout.length }, 'Agent stdout truncated');
+      } else {
+        stdout += chunk;
+      }
+    });
+
+    agent.stderr.on('data', (data) => {
+      const chunk = data.toString();
+      const lines = chunk.trim().split('\n');
+      for (const line of lines) {
+        if (line) logger.debug({ agent: group.folder }, line);
+      }
+      if (stderrTruncated) return;
+      const remaining = CONTAINER_MAX_OUTPUT_SIZE - stderr.length;
+      if (chunk.length > remaining) {
+        stderr += chunk.slice(0, remaining);
+        stderrTruncated = true;
+      } else {
+        stderr += chunk;
+      }
+    });
+
+    const timeout = setTimeout(() => {
+      logger.error({ group: group.name }, 'Agent timeout, killing');
+      agent.kill('SIGKILL');
+      resolve({
+        status: 'error',
+        result: null,
+        error: `Agent timed out after ${CONTAINER_TIMEOUT}ms`
+      });
+    }, group.containerConfig?.timeout || CONTAINER_TIMEOUT);
+
+    agent.on('close', (code) => {
+      clearTimeout(timeout);
+      const duration = Date.now() - startTime;
+
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const logFile = path.join(logsDir, `agent-${timestamp}.log`);
+
+      fs.writeFileSync(logFile, [
+        `=== Agent Run Log (Sandbox Mode) ===`,
+        `Timestamp: ${new Date().toISOString()}`,
+        `Group: ${group.name}`,
+        `Duration: ${duration}ms`,
+        `Exit Code: ${code}`,
+        ``,
+        `=== Stderr ===`,
+        stderr.slice(-1000),
+        ``,
+        `=== Stdout ===`,
+        stdout.slice(-1000)
+      ].join('\n'));
+
+      if (code !== 0) {
+        logger.error({ group: group.name, code, duration }, 'Agent exited with error');
+        resolve({
+          status: 'error',
+          result: null,
+          error: `Agent exited with code ${code}: ${stderr.slice(-200)}`
+        });
+        return;
+      }
+
+      try {
+        const startIdx = stdout.indexOf(OUTPUT_START_MARKER);
+        const endIdx = stdout.indexOf(OUTPUT_END_MARKER);
+
+        let jsonLine: string;
+        if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
+          jsonLine = stdout.slice(startIdx + OUTPUT_START_MARKER.length, endIdx).trim();
+        } else {
+          const lines = stdout.trim().split('\n');
+          jsonLine = lines[lines.length - 1];
+        }
+
+        const output: ContainerOutput = JSON.parse(jsonLine);
+        logger.info({ group: group.name, duration, status: output.status }, 'Agent completed');
+        resolve(output);
+      } catch (err) {
+        logger.error({ group: group.name, stdout: stdout.slice(-500) }, 'Failed to parse output');
+        resolve({
+          status: 'error',
+          result: null,
+          error: `Failed to parse output: ${err instanceof Error ? err.message : String(err)}`
+        });
+      }
+    });
+
+    agent.on('error', (err) => {
+      clearTimeout(timeout);
+      logger.error({ group: group.name, error: err }, 'Agent spawn error');
+      resolve({
+        status: 'error',
+        result: null,
+        error: `Agent spawn error: ${err.message}`
+      });
+    });
+  });
+}
+
 export async function runContainerAgent(
   group: RegisteredGroup,
   input: ContainerInput
 ): Promise<ContainerOutput> {
+  // In sandbox mode, run agent-runner directly without nested container
+  if (IS_SANDBOX) {
+    return runSandboxAgent(group, input);
+  }
+
   const startTime = Date.now();
 
   const groupDir = path.join(GROUPS_DIR, group.folder);
