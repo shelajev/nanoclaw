@@ -143,7 +143,8 @@ async function processMessage(msg: NewMessage): Promise<void> {
     registerGroup(msg.chat_jid, {
       name: chatName,
       folder: folderName,
-      jid: msg.chat_jid
+      trigger: `@${ASSISTANT_NAME}`,
+      added_at: new Date().toISOString()
     });
     group = registeredGroups[msg.chat_jid];
 
@@ -582,10 +583,15 @@ async function connectWhatsApp(): Promise<void> {
 
 async function startMessageLoop(): Promise<void> {
   logger.info(`NanoClaw running (trigger: @${ASSISTANT_NAME})`);
+  const isSandbox = process.env.IS_SANDBOX === '1';
 
   while (true) {
     try {
-      const jids = Object.keys(registeredGroups);
+      // In sandbox mode with no registered groups, scan all chats for trigger
+      let jids = Object.keys(registeredGroups);
+      if (isSandbox && jids.length === 0) {
+        jids = getAllChats().map(c => c.jid).filter(jid => jid !== '__group_sync__');
+      }
       const { messages } = getNewMessages(jids, lastTimestamp, ASSISTANT_NAME);
 
       if (messages.length > 0) logger.info({ count: messages.length }, 'New messages');
