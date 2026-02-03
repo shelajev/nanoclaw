@@ -130,7 +130,27 @@ function getAvailableGroups(): AvailableGroup[] {
 }
 
 async function processMessage(msg: NewMessage): Promise<void> {
-  const group = registeredGroups[msg.chat_jid];
+  let group = registeredGroups[msg.chat_jid];
+
+  // In sandbox mode, auto-register first group that triggers the bot as "main"
+  const isSandbox = process.env.IS_SANDBOX === '1';
+  if (!group && isSandbox && TRIGGER_PATTERN.test(msg.content.trim())) {
+    const isFirstGroup = Object.keys(registeredGroups).length === 0;
+    const folderName = isFirstGroup ? MAIN_GROUP_FOLDER : `group-${Date.now()}`;
+    const chatName = msg.chat_jid.split('@')[0];
+
+    logger.info({ jid: msg.chat_jid, folder: folderName }, 'Auto-registering group in sandbox mode');
+    registerGroup(msg.chat_jid, {
+      name: chatName,
+      folder: folderName,
+      jid: msg.chat_jid
+    });
+    group = registeredGroups[msg.chat_jid];
+
+    // Notify user
+    await sendMessage(msg.chat_jid, `${ASSISTANT_NAME}: Group registered! I'll respond to messages here now.`);
+  }
+
   if (!group) return;
 
   const content = msg.content.trim();
