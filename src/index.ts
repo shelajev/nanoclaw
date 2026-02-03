@@ -544,6 +544,27 @@ async function connectWhatsApp(): Promise<void> {
       }
     } else if (connection === 'open') {
       logger.info('Connected to WhatsApp');
+
+      // In sandbox mode, auto-register by sending self-message
+      const isSandbox = process.env.IS_SANDBOX === '1';
+      if (isSandbox && Object.keys(registeredGroups).length === 0 && sock.user?.id) {
+        const myJid = sock.user.id.replace(/:.*@/, '@');  // Normalize JID format
+        logger.info({ myJid }, 'Sandbox mode: auto-registering via self-message');
+
+        // Register self-chat as main group
+        registerGroup(myJid, {
+          name: 'self',
+          folder: MAIN_GROUP_FOLDER,
+          trigger: `@${ASSISTANT_NAME}`,
+          added_at: new Date().toISOString()
+        });
+
+        // Send welcome message
+        setTimeout(async () => {
+          await sendMessage(myJid, `${ASSISTANT_NAME}: Ready! Send me a message starting with @${ASSISTANT_NAME} and I'll help you.`);
+        }, 2000);
+      }
+
       // Sync group metadata on startup (respects 24h cache)
       syncGroupMetadata().catch(err => logger.error({ err }, 'Initial group sync failed'));
       // Set up daily sync timer
