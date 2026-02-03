@@ -6,8 +6,6 @@
  * API key injection (the SDK bypasses the proxy for auth validation).
  */
 
-import fs from 'fs';
-import path from 'path';
 import { spawn } from 'child_process';
 
 interface ContainerInput {
