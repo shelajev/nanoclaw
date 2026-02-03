@@ -6,6 +6,7 @@ import makeWASocket, {
 } from '@whiskeysockets/baileys';
 import pino from 'pino';
 import { exec, execSync } from 'child_process';
+import qrcode from 'qrcode-terminal';
 import fs from 'fs';
 import path from 'path';
 
@@ -483,7 +484,6 @@ async function connectWhatsApp(): Promise<void> {
 
   sock = makeWASocket({
     auth: { creds: state.creds, keys: makeCacheableSignalKeyStore(state.keys, logger) },
-    printQRInTerminal: isSandbox,
     logger,
     browser: ['NanoClaw', 'Chrome', '1.0.0']
   });
@@ -498,8 +498,15 @@ async function connectWhatsApp(): Promise<void> {
       exec(`osascript -e 'display notification "${msg}" with title "NanoClaw" sound name "Basso"'`);
       setTimeout(() => process.exit(1), 1000);
     } else if (qr && isSandbox) {
-      // Sandbox mode: QR is printed by printQRInTerminal, just log
-      logger.info('Scan the QR code above with WhatsApp to authenticate');
+      // Sandbox mode: render QR code in terminal
+      console.log('\n┌────────────────────────────────────────┐');
+      console.log('│  Scan this QR code with WhatsApp:      │');
+      console.log('│  1. Open WhatsApp on your phone        │');
+      console.log('│  2. Tap Menu > Linked Devices          │');
+      console.log('│  3. Point camera at QR code below      │');
+      console.log('└────────────────────────────────────────┘\n');
+      qrcode.generate(qr, { small: true });
+      logger.info('QR code displayed - waiting for scan...');
     }
 
     if (connection === 'close') {
