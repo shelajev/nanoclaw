@@ -147,12 +147,19 @@ export function setLastGroupSync(): void {
 export function storeMessage(msg: proto.IWebMessageInfo, chatJid: string, isFromMe: boolean, pushName?: string): void {
   if (!msg.key) return;
 
+  // Extract text content from various message types
+  // Baileys uses different structures for sent vs received messages
   const content =
     msg.message?.conversation ||
     msg.message?.extendedTextMessage?.text ||
     msg.message?.imageMessage?.caption ||
     msg.message?.videoMessage?.caption ||
+    // For sent messages, text might be in different locations
+    (msg.message as Record<string, unknown>)?.text as string ||
     '';
+
+  // Skip storing messages with empty content (e.g., sent messages with extraction issues)
+  if (!content || content.trim() === '') return;
 
   const timestamp = new Date(Number(msg.messageTimestamp) * 1000).toISOString();
   const sender = msg.key.participant || msg.key.remoteJid || '';
@@ -187,10 +194,11 @@ export function getNewMessages(jids: string[], lastTimestamp: string, botPrefix:
 
 export function getMessagesSince(chatJid: string, sinceTimestamp: string, botPrefix: string): NewMessage[] {
   // Filter out bot's own messages by checking content prefix
+  // Also filter out empty content messages (sent messages that weren't captured properly)
   const sql = `
     SELECT id, chat_jid, sender, sender_name, content, timestamp
     FROM messages
-    WHERE chat_jid = ? AND timestamp > ? AND content NOT LIKE ?
+    WHERE chat_jid = ? AND timestamp > ? AND content NOT LIKE ? AND content != '' AND content IS NOT NULL
     ORDER BY timestamp
   `;
   return db.prepare(sql).all(chatJid, sinceTimestamp, `${botPrefix}:%`) as NewMessage[];
